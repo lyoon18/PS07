@@ -1,6 +1,6 @@
 ---
 title: "STAT/MATH 495: Problem Set 07"
-author: "WRITE YOUR NAME(S) HERE"
+author: "Leonard Yoon"
 date: "2017-10-24"
 output:
   html_document:
@@ -22,6 +22,7 @@ set.seed(76)
 library(tidyverse)
 library(broom)
 library(knitr)
+library(ROCR)
 
 train <- read_csv("data/cs-training.csv") %>% 
   rename(Id = X1)
@@ -32,40 +33,127 @@ submission <- read_csv("data/sampleEntry.csv")
 
 Information on the competition can be found [here](https://www.kaggle.com/c/GiveMeSomeCredit/data).
 
-
-
 # Collaboration
 
-Please indicate who you collaborated with on this assignment: 
-
-
+Please indicate who you collaborated with on this assignment: Vickie (and BIG thanks to Andrew!)
 
 # Build binary classifier
 
 Build the binary classifier based on a single predictor variable: `DebtRatio`,
 `age`, or `MonthlyIncome`. Justify this choice.
 
-```{r}
+First, I want to compute ROC curves and calculate the area under the curve (AUC) for all three predictors. The predictor with the highest AUC will be my choice because that means the binary classifier that is based on the predictor is more correct than other binary classifiers that come from other predictors. Ideally, we would want a binary classifier that is always right (and therefore AUC = 1).   
 
+Below is representative code for computing ROC's and calculating AUC's for the three predictors, and a table with the three AUC's.
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+model_formula <- as.formula(SeriousDlqin2yrs~DebtRatio)
+model_logistic <- glm(model_formula, data=train, family="binomial") # create logistic model
+
+train_augmented <- model_logistic %>% 
+  broom::augment() %>% 
+  as_tibble() %>% 
+  mutate(p_hat = 1/(1+exp(-.fitted)))
+
+# Compute the ROC curve
+pred <- prediction(predictions = train_augmented$p_hat, labels = train_augmented$SeriousDlqin2yrs)
+perf <- performance(pred, "tpr","fpr")
+
+# Compute Area Under the Curve
+auc1 <- as.numeric(performance(pred,"auc")@y.values)
 ```
 
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+model_formula <- as.formula(SeriousDlqin2yrs~MonthlyIncome)
+model_logistic <- glm(model_formula, data=train, family="binomial")
 
+train_augmented <- model_logistic %>% 
+  broom::augment() %>% 
+  as_tibble() %>% 
+  mutate(p_hat = 1/(1+exp(-.fitted)))
+
+pred <- prediction(predictions = train_augmented$p_hat, labels = train_augmented$SeriousDlqin2yrs)
+perf <- performance(pred, "tpr","fpr")
+
+auc3 <- as.numeric(performance(pred,"auc")@y.values)
+```
+
+```{r, message=FALSE, warning=FALSE}
+model_formula <- as.formula(SeriousDlqin2yrs~age)
+model_logistic <- glm(model_formula, data=train, family="binomial")
+
+train_augmented <- model_logistic %>% 
+  broom::augment() %>% 
+  as_tibble() %>% 
+  mutate(p_hat = 1/(1+exp(-.fitted)))
+
+pred <- prediction(predictions = train_augmented$p_hat, labels = train_augmented$SeriousDlqin2yrs)
+perf <- performance(pred, "tpr","fpr")
+
+auc2 <- as.numeric(performance(pred,"auc")@y.values)
+```
+
+```{r, warning=FALSE, message=FALSE}
+df <- data_frame(DebtRatio = auc1,
+                 age = auc2,
+                 MonthlyIncome = auc3)
+rownames(df)=c("AUC")
+df %>% knitr::kable(digits=3)
+```
+
+As we can see, using `age` creates a predictive model that is not only doing better than guessing at random (AUC > .5) but also better than using `DebtRatio` or `MonthlyIncome` because it has the highest AUC.
+
+```{r, warning=FALSE, message=FALSE}
+mosaic::favstats(~age, data=train)
+
+train %>% 
+  ggplot(aes(x=age)) +
+  geom_histogram(binwidth = 5) +
+  labs(x="Age (years)") + theme_bw()
+```
+
+As an aside, there are some concerns about `age = 0` because babies should not have any credit scores (or financial history!). It's unclear where that lower cutoff should be but certainly the value of 0 is most likely a clerical error in the data set.
 
 # ROC curve
 
 Based on the ultimate classifier you choose, plot a corresponding ROC curve.
 
-```{r}
-
+```{r, message=FALSE, warning=FALSE}
+plot(perf, main=paste("Area Under the Curve =", round(auc2, 3)))
+abline(c(0, 1), lty=2)
 ```
 
-
+The ROC curve for `age` demonstrates that for a given threshold, there is a higher true positive rate compared to false positive rate that is better than random.
 
 # ROC curve for random guessing
 
 Instead of using any predictor information as you did above, switch your
 predictions to random guesses and plot the resulting ROC curve.
 
-```{r}
+```{r, message=FALSE, warning=FALSE}
+random_p_hat <- runif(nrow(train), min = 0, max = 1) # random guesses
 
+# Compute the ROC curve
+pred <- prediction(predictions = random_p_hat, labels = train$SeriousDlqin2yrs)
+perf <- performance(pred, "tpr","fpr")
+
+# Compute Area Under the Curve
+auc <- as.numeric(performance(pred,"auc")@y.values)
+auc
+
+# Print ROC curve
+plot(perf, main=paste("Area Under the Curve =", round(auc, 3)))
+abline(c(0, 1), lty=2)
+```
+
+Now, I have destroyed the relationship between $\hat{p}$ and `SeriousDlqin2yrs` by randomly assigning $\hat{p}$'s to all of the observations in the training data. If we have a good predictive model, the true positive rate at a given decision threshold will be greater than the false positive rate. By randomly assigning $\hat{p}$'s, we should now have a situation where the true positive rate at a given decision threshold essentially equals the false positive rate. That is, the model is randomly assigning observations of `SeriousDlqin2yrs = 0` and `SeriousDlqin2yrs = 1`. That's why this is "random guessing".
+
+# Create Submission File
+
+```{r}
+log_odds_hat <- predict(model_logistic, newdata=test) # this is the model with age as predictor
+p_hat <- 1/(1 + exp(-log_odds_hat))
+
+submission <- submission %>% mutate(Probability = p_hat)
+write.csv(submission, "submission.csv", row.names = FALSE)
 ```
